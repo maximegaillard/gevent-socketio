@@ -8,6 +8,7 @@ from gevent.pywsgi import WSGIServer
 from socketio.handler import SocketIOHandler
 from socketio.policyserver import FlashPolicyServer
 from socketio.virtsocket import Socket
+from geventwebsocket.handler import WebSocketHandler
 
 __all__ = ['SocketIOServer']
 
@@ -16,19 +17,37 @@ class SocketIOServer(WSGIServer):
     """A WSGI Server with a resource that acts like an SocketIO."""
 
     def __init__(self, *args, **kwargs):
-        """
-        This is just like the standard WSGIServer __init__, except with a
+        """This is just like the standard WSGIServer __init__, except with a
         few additional ``kwargs``:
 
-        :param resource: The URL which has to be identified as a socket.io request.  Defaults to the /socket.io/ URL.
+        :param resource: The URL which has to be identified as a
+            socket.io request.  Defaults to the /socket.io/ URL.
+
         :param transports: Optional list of transports to allow. List of
             strings, each string should be one of
             handler.SocketIOHandler.handler_types.
+
         :param policy_server: Boolean describing whether or not to use the
             Flash policy server.  Default True.
+
         :param policy_listener : A tuple containing (host, port) for the
             policy server.  This is optional and used only if policy server
             is set to true.  The default value is 0.0.0.0:843
+
+        :param heartbeat_interval: int The timeout for the server, we
+            should receive a heartbeat from the client within this
+            interval. This should be less than the
+            ``heartbeat_timeout``.
+
+        :param heartbeat_timeout: int The timeout for the client when
+            it should send a new heartbeat to the server. This value
+            is sent to the client after a successful handshake.
+
+        :param close_timeout: int The timeout for the client, when it
+            closes the connection it still X amounts of seconds to do
+            re open of the connection. This value is sent to the
+            client after a successful handshake.
+
         """
         self.sockets = {}
         if 'namespace' in kwargs:
@@ -49,7 +68,25 @@ class SocketIOServer(WSGIServer):
         else:
             self.policy_server = None
 
-        kwargs['handler_class'] = SocketIOHandler
+        # Extract other config options
+        self.config = {
+            'heartbeat_timeout': 60,
+            'close_timeout': 60,
+            'heartbeat_interval': 25,
+        }
+        for f in ('heartbeat_timeout', 'heartbeat_interval', 'close_timeout'):
+            if f in kwargs:
+                self.config[f] = int(kwargs.pop(f))
+
+        if not 'handler_class' in kwargs:
+            kwargs['handler_class'] = SocketIOHandler
+
+
+        if not 'ws_handler_class' in kwargs:
+            self.ws_handler_class = WebSocketHandler
+        else:
+            self.ws_handler_class = kwargs.pop('ws_handler_class')
+
         super(SocketIOServer, self).__init__(*args, **kwargs)
 
     def start_accepting(self):
@@ -65,13 +102,14 @@ class SocketIOServer(WSGIServer):
                 sys.stderr.write('FAILED to start flash policy server.\n\n')
         super(SocketIOServer, self).start_accepting()
 
-    def stop(self):
+    def stop(self, timeout=None):
         if self.policy_server is not None:
             self.policy_server.stop()
-        super(SocketIOServer, self).stop()
+        super(SocketIOServer, self).stop(timeout=timeout)
 
     def handle(self, socket, address):
-        handler = self.handler_class(socket, address, self)
+        # Pass in the config about timeouts, heartbeats, also...
+        handler = self.handler_class(self.config, socket, address, self)
         handler.handle()
 
     def get_socket(self, sessid=''):
@@ -79,8 +117,10 @@ class SocketIOServer(WSGIServer):
 
         socket = self.sockets.get(sessid)
 
+        if sessid and not socket:
+            return None  # you ask for a session that doesn't exist!
         if socket is None:
-            socket = Socket(self)
+            socket = Socket(self, self.config)
             self.sockets[socket.sessid] = socket
         else:
             socket.incr_hits()
