@@ -46,7 +46,12 @@ class SocketIOHandler(WSGIHandler):
 
 
     def _do_handshake(self, tokens):
-        if tokens["resource"] != self.server.resource:
+        from re import match
+        #
+        # little change to accept a url with more arguments (/xxx/socket.io/)
+        #
+        #if tokens["resource"] != self.server.resource:
+        if not match(self.server.resource, tokens["resource"]):
             self.log_error("socket.io URL mismatch")
         else:
             socket = self.server.get_socket()
